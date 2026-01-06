@@ -60,34 +60,37 @@ npm run dev
 
 ---
 
-## 4. 백그라운드 실행 (PM2)
+## 4. 백그라운드 실행
 
 SSH 연결이 끊어져도 봇이 계속 실행됩니다.
 
-### PM2 설치
+### systemd 서비스
+
+OS 레벨에서 프로세스를 관리하여 가장 안정적입니다.
+
+#### 설치
 ```bash
-sudo npm install -g pm2
+cd DiscordBot
+chmod +x scripts/linux/install-service.sh
+./scripts/linux/install-service.sh
 ```
 
-### 봇 시작
+#### 관리 명령어
 ```bash
-pm2 start index.js --name "discord-bot"
+sudo systemctl status discord-bot   # 상태 확인
+sudo systemctl start discord-bot    # 시작
+sudo systemctl stop discord-bot     # 중지
+sudo systemctl restart discord-bot  # 재시작
+journalctl -u discord-bot -f        # 실시간 로그
 ```
 
-### 유용한 PM2 명령어
-```bash
-pm2 list              # 실행 중인 프로세스 목록
-pm2 logs discord-bot  # 로그 확인
-pm2 restart discord-bot  # 재시작
-pm2 stop discord-bot  # 중지
-pm2 delete discord-bot  # 삭제
-```
-
-### 서버 재부팅 시 자동 시작
-```bash
-pm2 startup
-pm2 save
-```
+#### 특징
+| 설정 | 기능 |
+|------|------|
+| `WantedBy=multi-user.target` | 서버 재부팅 시 자동 시작 |
+| `Restart=always` | 크래시 시 자동 재시작 |
+| `RestartSec=10` | 재시작 전 10초 대기 (무한루프 방지) |
+| `After=network.target` | 네트워크 연결 후 시작 |
 
 ---
 
