@@ -1,33 +1,54 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes, PermissionFlagsBits, ChannelType } = require('discord.js');
 const fetch = require('node-fetch');
-const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 
-// 자동청소 설정 파일 경로
+// ===== 상수 정의 =====
+const TIME = {
+    SECOND: 1000,
+    MINUTE: 60 * 1000,
+    HOUR: 60 * 60 * 1000,
+    DAY: 24 * 60 * 60 * 1000,
+    TWO_WEEKS: 14 * 24 * 60 * 60 * 1000
+};
+
+const COOLDOWN = {
+    ANON_POST: TIME.MINUTE,           // 유동: 1분
+    CONFESSION: 3 * TIME.MINUTE       // 고백: 3분
+};
+
+const LIMITS = {
+    MESSAGE_FETCH: 100,               // 한 번에 가져올 최대 메시지 수
+    BULK_DELETE_AGE: TIME.TWO_WEEKS   // bulkDelete 가능한 메시지 최대 나이
+};
+
+// ===== 설정 파일 경로 =====
 const AUTO_CLEAN_FILE = path.join(__dirname, 'auto_clean.json');
 
-// 자동청소 설정 불러오기
-function loadAutoCleanSettings() {
+// ===== 범용 설정 관리 함수 =====
+function loadSettings(filePath, logPrefix) {
     try {
-        if (fs.existsSync(AUTO_CLEAN_FILE)) {
-            return JSON.parse(fs.readFileSync(AUTO_CLEAN_FILE, 'utf8'));
+        if (fs.existsSync(filePath)) {
+            return JSON.parse(fs.readFileSync(filePath, 'utf8'));
         }
     } catch (error) {
-        console.error('[자동청소] 설정 불러오기 실패:', error);
+        console.error(`[${logPrefix}] 설정 불러오기 실패:`, error);
     }
     return {};
 }
 
-// 자동청소 설정 저장
-function saveAutoCleanSettings(settings) {
+function saveSettings(filePath, settings, logPrefix) {
     try {
-        fs.writeFileSync(AUTO_CLEAN_FILE, JSON.stringify(settings, null, 2));
+        fs.writeFileSync(filePath, JSON.stringify(settings, null, 2));
     } catch (error) {
-        console.error('[자동청소] 설정 저장 실패:', error);
+        console.error(`[${logPrefix}] 설정 저장 실패:`, error);
     }
 }
+
+// 래퍼 함수 (기존 호출부 호환)
+const loadAutoCleanSettings = () => loadSettings(AUTO_CLEAN_FILE, '자동청소');
+const saveAutoCleanSettings = (settings) => saveSettings(AUTO_CLEAN_FILE, settings, '자동청소');
 
 // 자동청소 설정 및 타이머 저장
 let autoCleanSettings = loadAutoCleanSettings();
@@ -36,59 +57,91 @@ const autoCleanTimers = new Map();
 // 익명(디씨) 설정 파일 경로
 const ANON_FILE = path.join(__dirname, 'anon_settings.json');
 
-// 익명 설정 불러오기
-function loadAnonSettings() {
-    try {
-        if (fs.existsSync(ANON_FILE)) {
-            return JSON.parse(fs.readFileSync(ANON_FILE, 'utf8'));
-        }
-    } catch (error) {
-        console.error('[익명] 설정 불러오기 실패:', error);
-    }
-    return {};
-}
-
-// 익명 설정 저장
-function saveAnonSettings(settings) {
-    try {
-        fs.writeFileSync(ANON_FILE, JSON.stringify(settings, null, 2));
-    } catch (error) {
-        console.error('[익명] 설정 저장 실패:', error);
-    }
-}
+// 래퍼 함수 (익명 설정)
+const loadAnonSettings = () => loadSettings(ANON_FILE, '익명');
+const saveAnonSettings = (settings) => saveSettings(ANON_FILE, settings, '익명');
 
 // 익명 설정 및 쿨다운
 let anonSettings = loadAnonSettings();
 const anonCooldowns = new Map();
+
+// ===== 쿨다운 관리 함수 =====
+function checkCooldown(cooldownMap, key) {
+    if (cooldownMap.has(key)) {
+        const remaining = Math.ceil((cooldownMap.get(key) - Date.now()) / TIME.SECOND);
+        if (remaining > 0) {
+            return remaining;
+        }
+    }
+    return null;
+}
+
+function setCooldown(cooldownMap, key, durationMs) {
+    cooldownMap.set(key, Date.now() + durationMs);
+    setTimeout(() => cooldownMap.delete(key), durationMs);
+}
+
+async function handleCooldownCheck(interaction, cooldownMap, key) {
+    const remaining = checkCooldown(cooldownMap, key);
+    if (remaining !== null) {
+        await interaction.reply({
+            content: `잠시 후에 다시 시도해주세요. (${remaining}초 남음)`,
+            ephemeral: true
+        });
+        return true;
+    }
+    return false;
+}
+
+// ===== 메시지 삭제 함수 =====
+async function bulkDeleteMessages(channel, options = {}) {
+    const { maxMessages = Infinity } = options;
+    let totalDeleted = 0;
+    let deletedInBatch;
+
+    do {
+        const messages = await channel.messages.fetch({ limit: LIMITS.MESSAGE_FETCH });
+        const cutoffTime = Date.now() - LIMITS.BULK_DELETE_AGE;
+        const deletableMessages = messages.filter(msg => msg.createdTimestamp > cutoffTime);
+
+        if (deletableMessages.size === 0) break;
+
+        const deleted = await channel.bulkDelete(deletableMessages, true);
+        deletedInBatch = deleted.size;
+        totalDeleted += deletedInBatch;
+
+        if (totalDeleted >= maxMessages) break;
+
+    } while (deletedInBatch > 0);
+
+    return totalDeleted;
+}
 
 // 채널 자동청소 실행
 async function executeAutoClean(channelId) {
     try {
         const channel = await client.channels.fetch(channelId);
         if (!channel) {
-            console.log(`[자동청소] 채널을 찾을 수 없음: ${channelId}`);
+            // 채널 삭제됨 - 설정 정리
+            stopAutoCleanTimer(channelId);
+            delete autoCleanSettings[channelId];
+            saveAutoCleanSettings(autoCleanSettings);
+            console.log(`[자동청소] 채널 삭제됨, 설정 제거: ${channelId}`);
             return;
         }
 
-        let totalDeleted = 0;
-        let deletedInBatch;
-
-        do {
-            const messages = await channel.messages.fetch({ limit: 100 });
-            const twoWeeksAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
-            const deletableMessages = messages.filter(msg => msg.createdTimestamp > twoWeeksAgo);
-
-            if (deletableMessages.size === 0) break;
-
-            const deleted = await channel.bulkDelete(deletableMessages, true);
-            deletedInBatch = deleted.size;
-            totalDeleted += deletedInBatch;
-
-        } while (deletedInBatch > 0);
-
+        const totalDeleted = await bulkDeleteMessages(channel);
         console.log(`[자동청소] #${channel.name}: ${totalDeleted}개 메시지 삭제됨`);
 
     } catch (error) {
+        // 채널 접근 불가 시 설정 정리
+        if (error.code === 10003 || error.code === 50001) {
+            stopAutoCleanTimer(channelId);
+            delete autoCleanSettings[channelId];
+            saveAutoCleanSettings(autoCleanSettings);
+            console.log(`[자동청소] 채널 접근 불가, 설정 제거: ${channelId}`);
+            return;
+        }
         console.error(`[자동청소] 에러 (${channelId}):`, error.message);
     }
 }
@@ -349,7 +402,9 @@ client.on('interactionCreate', async (interaction) => {
             .setColor(0xFFFFFF)
             .setTitle(`📚 ${result.title}`)
             .setURL(result.content_urls?.desktop?.page || `https://ko.wikipedia.org/wiki/${encodeURIComponent(query)}`)
-            .setDescription(result.extract?.slice(0, 500) + '...' || '내용 없음')
+            .setDescription(result.extract
+                ? (result.extract.length > 500 ? result.extract.slice(0, 500) + '...' : result.extract)
+                : '내용 없음')
             .setFooter({ text: 'Wikipedia' })
             .setTimestamp();
 
@@ -425,29 +480,10 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            let totalDeleted = 0;
-            let deletedInBatch;
+            const maxMessages = isAll ? Infinity : amount;
+            const totalDeleted = await bulkDeleteMessages(interaction.channel, { maxMessages });
 
-            // 메시지 삭제 반복 (14일 이내 메시지만)
-            do {
-                const messages = await interaction.channel.messages.fetch({ limit: 100 });
-
-                // 14일 이내 메시지만 필터링
-                const twoWeeksAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
-                const deletableMessages = messages.filter(msg => msg.createdTimestamp > twoWeeksAgo);
-
-                if (deletableMessages.size === 0) break;
-
-                const deleted = await interaction.channel.bulkDelete(deletableMessages, true);
-                deletedInBatch = deleted.size;
-                totalDeleted += deletedInBatch;
-
-                console.log(`[청소] ${deletedInBatch}개 메시지 삭제됨 (총 ${totalDeleted}개)`);
-
-                // 전체 옵션이 아니면 개수 제한 체크
-                if (!isAll && totalDeleted >= amount) break;
-
-            } while (deletedInBatch > 0);
+            console.log(`[청소] 총 ${totalDeleted}개 메시지 삭제됨`);
 
             await interaction.editReply({
                 content: `${totalDeleted}개의 메시지를 삭제했습니다.\n(14일 이상 된 메시지는 삭제할 수 없습니다)`
@@ -571,16 +607,8 @@ client.on('interactionCreate', async (interaction) => {
 
         // 쿨다운 체크 (1분)
         const cooldownKey = `${guildId}-${interaction.user.id}`;
-        const cooldownTime = 60 * 1000; // 1분
-        if (anonCooldowns.has(cooldownKey)) {
-            const remaining = Math.ceil((anonCooldowns.get(cooldownKey) - Date.now()) / 1000);
-            if (remaining > 0) {
-                await interaction.reply({
-                    content: `잠시 후에 다시 시도해주세요. (${remaining}초 남음)`,
-                    ephemeral: true
-                });
-                return;
-            }
+        if (await handleCooldownCheck(interaction, anonCooldowns, cooldownKey)) {
+            return;
         }
 
         try {
@@ -596,8 +624,7 @@ client.on('interactionCreate', async (interaction) => {
             await channel.send({ embeds: [embed] });
 
             // 쿨다운 설정
-            anonCooldowns.set(cooldownKey, Date.now() + cooldownTime);
-            setTimeout(() => anonCooldowns.delete(cooldownKey), cooldownTime);
+            setCooldown(anonCooldowns, cooldownKey, COOLDOWN.ANON_POST);
 
             await interaction.reply({
                 content: '디씨에 글이 올라갔습니다.',
@@ -640,16 +667,8 @@ client.on('interactionCreate', async (interaction) => {
 
         // 쿨다운 체크 (3분)
         const cooldownKey = `confession-${interaction.user.id}`;
-        const cooldownTime = 3 * 60 * 1000; // 3분
-        if (anonCooldowns.has(cooldownKey)) {
-            const remaining = Math.ceil((anonCooldowns.get(cooldownKey) - Date.now()) / 1000);
-            if (remaining > 0) {
-                await interaction.reply({
-                    content: `잠시 후에 다시 시도해주세요. (${remaining}초 남음)`,
-                    ephemeral: true
-                });
-                return;
-            }
+        if (await handleCooldownCheck(interaction, anonCooldowns, cooldownKey)) {
+            return;
         }
 
         try {
@@ -663,8 +682,7 @@ client.on('interactionCreate', async (interaction) => {
             await targetUser.send({ embeds: [embed] });
 
             // 쿨다운 설정
-            anonCooldowns.set(cooldownKey, Date.now() + cooldownTime);
-            setTimeout(() => anonCooldowns.delete(cooldownKey), cooldownTime);
+            setCooldown(anonCooldowns, cooldownKey, COOLDOWN.CONFESSION);
 
             await interaction.reply({
                 content: `${targetUser.username}님에게 마음을 전했습니다.`,

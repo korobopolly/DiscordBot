@@ -2,10 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(mkdir:*)",
-      "Bash(dir /B /S \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\")",
       "Bash(cat:*)",
-      "Bash(del \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\\\\.env.example\")",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(dir /s /b \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\")",
+      "Bash(findstr:*)",
+      "Bash(dir \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\" /s /b)",
+      "Bash(dir \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\" /B)",
+      "Bash(node --check:*)",
+      "Bash(where:*)",
+      "Bash(dir /B \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\\\\scripts\\\\claude-hooks\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"& $env:USERPROFILE\\\\.claude\\\\hooks\\\\discord-notify.ps1\")",
+      "Bash(cmd /c powershell -ExecutionPolicy Bypass -File \"%USERPROFILE%\\\\.claude\\\\hooks\\\\discord-notify.ps1\")",
+      "Bash(cmd /c \"if exist \"\"%USERPROFILE%\\\\.env\"\" \\(type \"\"%USERPROFILE%\\\\.env\"\"\\) else \\(echo not found\\)\")",
+      "Bash(dir /a \"C:\\\\Users\\\\shqkd\\\\git\\\\DiscordBot\")"
     ]
   }
 }
