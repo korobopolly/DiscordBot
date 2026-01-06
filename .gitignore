@@ -1,2 +1,6 @@
 node_modules/
 .env
+
+# Bot settings (server-specific data)
+auto_clean.json
+anon_settings.json

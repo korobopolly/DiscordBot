@@ -33,7 +33,7 @@ function saveAutoCleanSettings(settings) {
 let autoCleanSettings = loadAutoCleanSettings();
 const autoCleanTimers = new Map();
 
-// 익명(대나무숲) 설정 파일 경로
+// 익명(디씨) 설정 파일 경로
 const ANON_FILE = path.join(__dirname, 'anon_settings.json');
 
 // 익명 설정 불러오기
@@ -201,33 +201,33 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
     new SlashCommandBuilder()
         .setName('디씨주소')
-        .setDescription('익명 메시지가 올라갈 채널을 설정합니다 (관리자 전용)')
+        .setDescription('디씨 주소를 설정합니다 (관리자)')
         .addChannelOption(option =>
             option.setName('채널')
-                .setDescription('대나무숲 채널')
+                .setDescription('익명 글이 올라올 채널')
                 .addChannelTypes(ChannelType.GuildText)
                 .setRequired(true)
         )
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
     new SlashCommandBuilder()
         .setName('유동')
-        .setDescription('익명으로 대나무숲에 메시지를 전송합니다')
+        .setDescription('디씨에 익명으로 글을 씁니다')
         .addStringOption(option =>
             option.setName('내용')
-                .setDescription('전송할 메시지 내용')
+                .setDescription('하고 싶은 말')
                 .setRequired(true)
         ),
     new SlashCommandBuilder()
         .setName('고백')
-        .setDescription('특정 유저에게 익명으로 메시지를 전송합니다')
+        .setDescription('누군가에게 익명으로 마음을 전합니다')
         .addUserOption(option =>
             option.setName('대상')
-                .setDescription('메시지를 받을 유저')
+                .setDescription('마음을 전할 상대')
                 .setRequired(true)
         )
         .addStringOption(option =>
             option.setName('내용')
-                .setDescription('전송할 메시지 내용')
+                .setDescription('전하고 싶은 말')
                 .setRequired(true)
         )
 ].map(command => command.toJSON());
@@ -389,7 +389,9 @@ client.on('interactionCreate', async (interaction) => {
                 { name: '/위키 [검색어]', value: '위키피디아에서 검색합니다', inline: true },
                 { name: '/나무위키 [검색어]', value: '나무위키에서 검색합니다', inline: true },
                 { name: '/청소 [개수]', value: '메시지 삭제 (관리자)', inline: true },
-                { name: '/자동청소 설정', value: '주기적 자동 삭제 (관리자)', inline: true }
+                { name: '/자동청소 설정', value: '주기적 자동 삭제 (관리자)', inline: true },
+                { name: '/유동 [내용]', value: '디씨에 익명 글쓰기', inline: true },
+                { name: '/고백 [유저] [내용]', value: '익명으로 마음 전하기', inline: true }
             )
             .setFooter({ text: 'Utility Bot' })
             .setTimestamp();
@@ -533,6 +535,150 @@ client.on('interactionCreate', async (interaction) => {
                 .setTimestamp();
 
             await interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+    }
+
+    // 디씨주소 (디씨 채널 설정)
+    if (commandName === '디씨주소') {
+        const channel = interaction.options.getChannel('채널');
+
+        anonSettings[interaction.guild.id] = {
+            channelId: channel.id,
+            channelName: channel.name,
+            createdAt: new Date().toISOString()
+        };
+        saveAnonSettings(anonSettings);
+
+        await interaction.reply({
+            content: `<#${channel.id}>이 디씨 주소로 지정되었습니다.\n이제 \`/유동\` 명령어로 익명 글을 쓸 수 있습니다.`,
+            ephemeral: true
+        });
+    }
+
+    // 유동 (익명 메시지)
+    if (commandName === '유동') {
+        const content = interaction.options.getString('내용');
+        const guildId = interaction.guild.id;
+
+        // 디씨 채널 설정 확인
+        if (!anonSettings[guildId]) {
+            await interaction.reply({
+                content: '아직 디씨 주소가 없습니다. 관리자에게 `/디씨주소` 설정을 요청하세요.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 쿨다운 체크 (1분)
+        const cooldownKey = `${guildId}-${interaction.user.id}`;
+        const cooldownTime = 60 * 1000; // 1분
+        if (anonCooldowns.has(cooldownKey)) {
+            const remaining = Math.ceil((anonCooldowns.get(cooldownKey) - Date.now()) / 1000);
+            if (remaining > 0) {
+                await interaction.reply({
+                    content: `잠시 후에 다시 시도해주세요. (${remaining}초 남음)`,
+                    ephemeral: true
+                });
+                return;
+            }
+        }
+
+        try {
+            const channel = await client.channels.fetch(anonSettings[guildId].channelId);
+
+            const embed = new EmbedBuilder()
+                .setColor(0x2F3136)
+                .setAuthor({ name: 'ㅇㅇ (익명)', iconURL: 'https://cdn.discordapp.com/embed/avatars/0.png' })
+                .setDescription(content)
+                .setFooter({ text: '디씨' })
+                .setTimestamp();
+
+            await channel.send({ embeds: [embed] });
+
+            // 쿨다운 설정
+            anonCooldowns.set(cooldownKey, Date.now() + cooldownTime);
+            setTimeout(() => anonCooldowns.delete(cooldownKey), cooldownTime);
+
+            await interaction.reply({
+                content: '디씨에 글이 올라갔습니다.',
+                ephemeral: true
+            });
+
+            console.log(`[유동] ${interaction.user.tag}`);
+
+        } catch (error) {
+            console.error('[유동] 에러:', error);
+            await interaction.reply({
+                content: '메시지 전송에 실패했습니다.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // 고백 (특정 유저에게 익명 DM)
+    if (commandName === '고백') {
+        const targetUser = interaction.options.getUser('대상');
+        const content = interaction.options.getString('내용');
+
+        // 자기 자신에게 보내기 방지
+        if (targetUser.id === interaction.user.id) {
+            await interaction.reply({
+                content: '자기 자신에게는 보낼 수 없습니다.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 봇에게 보내기 방지
+        if (targetUser.bot) {
+            await interaction.reply({
+                content: '봇에게는 보낼 수 없습니다.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 쿨다운 체크 (3분)
+        const cooldownKey = `confession-${interaction.user.id}`;
+        const cooldownTime = 3 * 60 * 1000; // 3분
+        if (anonCooldowns.has(cooldownKey)) {
+            const remaining = Math.ceil((anonCooldowns.get(cooldownKey) - Date.now()) / 1000);
+            if (remaining > 0) {
+                await interaction.reply({
+                    content: `잠시 후에 다시 시도해주세요. (${remaining}초 남음)`,
+                    ephemeral: true
+                });
+                return;
+            }
+        }
+
+        try {
+            const embed = new EmbedBuilder()
+                .setColor(0xFF6B9D)
+                .setTitle('💌 누군가의 마음')
+                .setDescription(content)
+                .setFooter({ text: `${interaction.guild.name}에서 보낸 익명 메시지` })
+                .setTimestamp();
+
+            await targetUser.send({ embeds: [embed] });
+
+            // 쿨다운 설정
+            anonCooldowns.set(cooldownKey, Date.now() + cooldownTime);
+            setTimeout(() => anonCooldowns.delete(cooldownKey), cooldownTime);
+
+            await interaction.reply({
+                content: `${targetUser.username}님에게 마음을 전했습니다.`,
+                ephemeral: true
+            });
+
+            console.log(`[고백] ${interaction.user.tag} → ${targetUser.tag}`);
+
+        } catch (error) {
+            console.error('[고백] 에러:', error);
+            await interaction.reply({
+                content: '전송에 실패했습니다. 상대방이 DM을 막아뒀을 수 있어요.',
+                ephemeral: true
+            });
         }
     }
 });
