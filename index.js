@@ -4,6 +4,11 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
+// 캘린더 모듈
+const calendarAuth = require('./calendar/auth');
+const calendarApi = require('./calendar/api');
+const calendarScheduler = require('./calendar/scheduler');
+
 // ===== 상수 정의 =====
 const TIME = {
     SECOND: 1000,
@@ -64,6 +69,18 @@ const saveAnonSettings = (settings) => saveSettings(ANON_FILE, settings, '익명
 // 익명 설정 및 쿨다운
 let anonSettings = loadAnonSettings();
 const anonCooldowns = new Map();
+
+// ===== 캘린더 설정 =====
+const CALENDAR_TOKENS_FILE = path.join(__dirname, 'calendar_tokens.json');
+const CALENDAR_SETTINGS_FILE = path.join(__dirname, 'calendar_settings.json');
+
+const loadCalendarTokens = () => loadSettings(CALENDAR_TOKENS_FILE, '캘린더토큰');
+const saveCalendarTokens = (settings) => saveSettings(CALENDAR_TOKENS_FILE, settings, '캘린더토큰');
+const loadCalendarSettings = () => loadSettings(CALENDAR_SETTINGS_FILE, '캘린더알림');
+const saveCalendarSettings = (settings) => saveSettings(CALENDAR_SETTINGS_FILE, settings, '캘린더알림');
+
+let calendarTokens = loadCalendarTokens();
+let calendarSettings = loadCalendarSettings();
 
 // ===== 쿨다운 관리 함수 =====
 function checkCooldown(cooldownMap, key) {
@@ -282,7 +299,44 @@ const commands = [
             option.setName('내용')
                 .setDescription('전하고 싶은 말')
                 .setRequired(true)
+        ),
+    // ===== 캘린더 명령어 =====
+    new SlashCommandBuilder()
+        .setName('캘린더연동')
+        .setDescription('Google 캘린더를 연동합니다')
+        .addStringOption(option =>
+            option.setName('코드')
+                .setDescription('Google 인증 코드 (없으면 인증 URL 발급)')
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName('캘린더해제')
+        .setDescription('Google 캘린더 연동을 해제합니다'),
+    new SlashCommandBuilder()
+        .setName('내일정')
+        .setDescription('오늘의 일정을 확인합니다')
+        .addStringOption(option =>
+            option.setName('날짜')
+                .setDescription('조회할 날짜 (예: 2026-01-08, 내일, 모레)')
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName('알림설정')
+        .setDescription('매일 일정 알림을 설정합니다')
+        .addStringOption(option =>
+            option.setName('시간')
+                .setDescription('알림 시간 (예: 08:00)')
+                .setRequired(true)
         )
+        .addChannelOption(option =>
+            option.setName('채널')
+                .setDescription('알림 받을 채널 (선택 안하면 DM)')
+                .addChannelTypes(ChannelType.GuildText)
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName('알림해제')
+        .setDescription('일정 알림을 해제합니다')
 ].map(command => command.toJSON());
 
 // 위키피디아 검색 함수
@@ -379,7 +433,67 @@ client.once('ready', async () => {
         startAutoCleanTimer(channelId, settings.intervalHours);
     }
     console.log(`[자동청소] ${Object.keys(autoCleanSettings).length}개 채널 설정 복원됨`);
+
+    // 저장된 캘린더 알림 설정 복원
+    calendarScheduler.restoreAllSchedules(calendarSettings, sendCalendarNotification);
 });
+
+// 캘린더 알림 전송 함수
+async function sendCalendarNotification(userId) {
+    try {
+        const tokens = calendarTokens[userId];
+        const settings = calendarSettings[userId];
+
+        if (!tokens || !settings || !settings.enabled) {
+            return;
+        }
+
+        // 토큰 갱신 필요 여부 확인
+        let oauth2Client;
+        if (calendarAuth.isTokenExpired(tokens)) {
+            try {
+                const newTokens = await calendarAuth.refreshAccessToken(tokens);
+                calendarTokens[userId] = newTokens;
+                saveCalendarTokens(calendarTokens);
+                oauth2Client = calendarAuth.getAuthenticatedClient(newTokens);
+            } catch (error) {
+                console.error(`[캘린더] 토큰 갱신 실패 (${userId}):`, error.message);
+                return;
+            }
+        } else {
+            oauth2Client = calendarAuth.getAuthenticatedClient(tokens);
+        }
+
+        // 오늘 일정 조회
+        const events = await calendarApi.getTodayEvents(oauth2Client);
+        const formattedEvents = calendarApi.formatEventsForDiscord(events);
+
+        const embed = new EmbedBuilder()
+            .setColor(0x34A853)
+            .setTitle('🔔 오늘의 일정 알림')
+            .setDescription(formattedEvents)
+            .setFooter({ text: '매일 알림 | /알림해제로 끄기' })
+            .setTimestamp();
+
+        // DM 또는 채널로 전송
+        if (settings.channelId) {
+            const channel = await client.channels.fetch(settings.channelId);
+            if (channel) {
+                await channel.send({ content: `<@${userId}>`, embeds: [embed] });
+            }
+        } else {
+            const user = await client.users.fetch(userId);
+            if (user) {
+                await user.send({ embeds: [embed] });
+            }
+        }
+
+        console.log(`[캘린더] 알림 전송 완료: ${userId}`);
+
+    } catch (error) {
+        console.error(`[캘린더] 알림 전송 실패 (${userId}):`, error.message);
+    }
+}
 
 // 슬래시 명령어 처리
 client.on('interactionCreate', async (interaction) => {
@@ -446,7 +560,10 @@ client.on('interactionCreate', async (interaction) => {
                 { name: '/청소 [개수]', value: '메시지 삭제 (관리자)', inline: true },
                 { name: '/자동청소 설정', value: '주기적 자동 삭제 (관리자)', inline: true },
                 { name: '/유동 [내용]', value: '디씨에 익명 글쓰기', inline: true },
-                { name: '/고백 [유저] [내용]', value: '익명으로 마음 전하기', inline: true }
+                { name: '/고백 [유저] [내용]', value: '익명으로 마음 전하기', inline: true },
+                { name: '/캘린더연동', value: 'Google 캘린더 연동', inline: true },
+                { name: '/내일정 [날짜]', value: '일정 확인', inline: true },
+                { name: '/알림설정 [시간]', value: '매일 일정 알림', inline: true }
             )
             .setFooter({ text: 'Utility Bot' })
             .setTimestamp();
@@ -698,6 +815,237 @@ client.on('interactionCreate', async (interaction) => {
                 ephemeral: true
             });
         }
+    }
+
+    // ===== 캘린더 명령어 =====
+
+    // 캘린더연동
+    if (commandName === '캘린더연동') {
+        const code = interaction.options.getString('코드');
+        const userId = interaction.user.id;
+
+        // Google OAuth 설정 확인
+        if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+            await interaction.reply({
+                content: '캘린더 기능이 설정되지 않았습니다. 관리자에게 문의하세요.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 코드 없이 실행 → 인증 URL 발급
+        if (!code) {
+            const authUrl = calendarAuth.generateAuthUrl();
+
+            const embed = new EmbedBuilder()
+                .setColor(0x4285F4)
+                .setTitle('📅 Google 캘린더 연동')
+                .setDescription('아래 링크를 클릭하여 Google 로그인 후,\n표시되는 **인증 코드**를 복사하세요.')
+                .addFields(
+                    { name: '1️⃣ 로그인 링크', value: `[Google 로그인](${authUrl})` },
+                    { name: '2️⃣ 코드 입력', value: '`/캘린더연동 코드:여기에붙여넣기`' }
+                )
+                .setFooter({ text: '인증 코드는 1회용입니다' });
+
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+            return;
+        }
+
+        // 코드로 토큰 교환
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+            const tokens = await calendarAuth.getTokenFromCode(code);
+
+            calendarTokens[userId] = {
+                ...tokens,
+                linkedAt: new Date().toISOString()
+            };
+            saveCalendarTokens(calendarTokens);
+
+            await interaction.editReply({
+                content: '✅ Google 캘린더 연동이 완료되었습니다!\n`/내일정`으로 일정을 확인해보세요.'
+            });
+
+            console.log(`[캘린더] 연동 완료: ${interaction.user.tag}`);
+
+        } catch (error) {
+            console.error('[캘린더] 연동 에러:', error);
+            await interaction.editReply({
+                content: '❌ 인증 코드가 잘못되었거나 만료되었습니다.\n`/캘린더연동`으로 다시 시도해주세요.'
+            });
+        }
+    }
+
+    // 캘린더해제
+    if (commandName === '캘린더해제') {
+        const userId = interaction.user.id;
+
+        if (!calendarTokens[userId]) {
+            await interaction.reply({
+                content: '연동된 캘린더가 없습니다.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 토큰 삭제
+        delete calendarTokens[userId];
+        saveCalendarTokens(calendarTokens);
+
+        // 알림 설정도 삭제
+        if (calendarSettings[userId]) {
+            calendarScheduler.cancelNotification(userId);
+            delete calendarSettings[userId];
+            saveCalendarSettings(calendarSettings);
+        }
+
+        await interaction.reply({
+            content: '✅ 캘린더 연동이 해제되었습니다.',
+            ephemeral: true
+        });
+
+        console.log(`[캘린더] 연동 해제: ${interaction.user.tag}`);
+    }
+
+    // 내일정
+    if (commandName === '내일정') {
+        const userId = interaction.user.id;
+        const dateStr = interaction.options.getString('날짜');
+
+        // 연동 확인
+        if (!calendarTokens[userId]) {
+            await interaction.reply({
+                content: '캘린더가 연동되어 있지 않습니다.\n`/캘린더연동`으로 먼저 연동해주세요.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+            // 날짜 파싱
+            const date = calendarApi.parseDate(dateStr);
+            if (date === null) {
+                await interaction.editReply({
+                    content: '❌ 날짜 형식이 잘못되었습니다.\n예: `2026-01-08`, `01-08`, `오늘`, `내일`, `모레`'
+                });
+                return;
+            }
+
+            // 토큰 갱신 필요 여부 확인
+            let tokens = calendarTokens[userId];
+            if (calendarAuth.isTokenExpired(tokens)) {
+                try {
+                    tokens = await calendarAuth.refreshAccessToken(tokens);
+                    calendarTokens[userId] = tokens;
+                    saveCalendarTokens(calendarTokens);
+                } catch (error) {
+                    await interaction.editReply({
+                        content: '❌ 인증이 만료되었습니다.\n`/캘린더연동`으로 다시 연동해주세요.'
+                    });
+                    return;
+                }
+            }
+
+            const oauth2Client = calendarAuth.getAuthenticatedClient(tokens);
+            const events = await calendarApi.getTodayEvents(oauth2Client, date);
+            const formattedEvents = calendarApi.formatEventsForDiscord(events);
+
+            const dateDisplay = date.toLocaleDateString('ko-KR', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                weekday: 'long'
+            });
+
+            const embed = new EmbedBuilder()
+                .setColor(0x4285F4)
+                .setTitle(`📅 ${dateDisplay}`)
+                .setDescription(formattedEvents)
+                .setFooter({ text: 'Google Calendar' })
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('[캘린더] 일정 조회 에러:', error);
+            await interaction.editReply({
+                content: '❌ 일정을 불러오는 중 오류가 발생했습니다.'
+            });
+        }
+    }
+
+    // 알림설정
+    if (commandName === '알림설정') {
+        const userId = interaction.user.id;
+        const time = interaction.options.getString('시간');
+        const channel = interaction.options.getChannel('채널');
+
+        // 연동 확인
+        if (!calendarTokens[userId]) {
+            await interaction.reply({
+                content: '캘린더가 연동되어 있지 않습니다.\n`/캘린더연동`으로 먼저 연동해주세요.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 시간 형식 확인
+        if (!calendarScheduler.isValidTimeFormat(time)) {
+            await interaction.reply({
+                content: '❌ 시간 형식이 잘못되었습니다.\n예: `08:00`, `14:30`',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 설정 저장
+        calendarSettings[userId] = {
+            notificationTime: time,
+            channelId: channel ? channel.id : null,
+            guildId: interaction.guild?.id || null,
+            enabled: true,
+            createdAt: new Date().toISOString()
+        };
+        saveCalendarSettings(calendarSettings);
+
+        // 스케줄 등록
+        calendarScheduler.scheduleNotification(userId, time, sendCalendarNotification);
+
+        const targetStr = channel ? `<#${channel.id}>` : 'DM';
+        await interaction.reply({
+            content: `✅ 매일 **${time}**에 ${targetStr}(으)로 일정 알림을 보내드릴게요!`,
+            ephemeral: true
+        });
+
+        console.log(`[캘린더] 알림 설정: ${interaction.user.tag} (${time})`);
+    }
+
+    // 알림해제
+    if (commandName === '알림해제') {
+        const userId = interaction.user.id;
+
+        if (!calendarSettings[userId]) {
+            await interaction.reply({
+                content: '설정된 알림이 없습니다.',
+                ephemeral: true
+            });
+            return;
+        }
+
+        // 스케줄 취소 및 설정 삭제
+        calendarScheduler.cancelNotification(userId);
+        delete calendarSettings[userId];
+        saveCalendarSettings(calendarSettings);
+
+        await interaction.reply({
+            content: '✅ 일정 알림이 해제되었습니다.',
+            ephemeral: true
+        });
+
+        console.log(`[캘린더] 알림 해제: ${interaction.user.tag}`);
     }
 });
 

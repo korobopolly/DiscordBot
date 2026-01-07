@@ -4,3 +4,7 @@ node_modules/
 # Bot settings (server-specific data)
 auto_clean.json
 anon_settings.json
+
+# Calendar OAuth tokens (sensitive data)
+calendar_tokens.json
+calendar_settings.json
