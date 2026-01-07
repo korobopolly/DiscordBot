@@ -222,17 +222,6 @@ $settingsContent = @'
         ]
       }
     ],
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cmd /c powershell -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.claude\\hooks\\discord-notify.ps1\""
-          }
-        ]
-      }
-    ],
     "PermissionRequest": [
       {
         "matcher": "",
@@ -319,6 +308,6 @@ Write-Host "  - $scriptFile"
 Write-Host "  - $envFile"
 Write-Host ""
 Write-Host "Claude Code will now send Discord notifications on:" -ForegroundColor Cyan
-Write-Host "  - Notification events (permission requests, etc.)"
 Write-Host "  - Stop events (when Claude completes a response)"
+Write-Host "  - PermissionRequest events (when Claude needs permission)"
 Write-Host ""

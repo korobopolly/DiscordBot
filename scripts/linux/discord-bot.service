@@ -4,14 +4,14 @@ After=network.target
 
 [Service]
 Type=simple
-User=YOUR_USERNAME
-WorkingDirectory=/home/YOUR_USERNAME/DiscordBot
-ExecStart=/usr/bin/node index.js
+User=__USER__
+WorkingDirectory=__WORKDIR__
+ExecStart=__NODE__ --watch index.js
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-Environment=NODE_ENV=production
+Environment=NODE_ENV=development
 
 [Install]
 WantedBy=multi-user.target
