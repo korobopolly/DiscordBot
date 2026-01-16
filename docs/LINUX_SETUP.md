@@ -81,6 +81,8 @@ sudo systemctl status discord-bot   # 상태 확인
 sudo systemctl start discord-bot    # 시작
 sudo systemctl stop discord-bot     # 중지
 sudo systemctl restart discord-bot  # 재시작
+sudo systemctl enable discord-bot   # 자동 재시작
+sudo systemctl is-enabled discord-bot # 자동 재시작 확인
 journalctl -u discord-bot -f        # 실시간 로그
 ```
 
