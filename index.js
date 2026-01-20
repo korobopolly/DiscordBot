@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes, PermissionFlagsBits, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes, PermissionFlagsBits, ChannelType, Events } = require('discord.js');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
@@ -357,7 +357,7 @@ async function namuSearch(query) {
 }
 
 // 봇 준비 완료
-client.once('ready', async () => {
+client.once(Events.ClientReady, async () => {
     console.log(`${client.user.tag} 봇이 온라인입니다!`);
 
     // 슬래시 명령어 등록
